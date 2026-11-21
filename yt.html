@@ -52,7 +52,9 @@ iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
     post({event: 'command', func: 'loadModule', args: ['captions']});
     post({event: 'command', func: 'setOption', args: ['captions', 'track', {languageCode: from, kind: 'asr', translationLanguage: {languageCode: cc, languageName: langName(cc)}}]}); }
 
-  var ready = false, sawPlay = false, state = -1, n = 0;
+  var ready = false, sawPlay = false, state = -1, n = 0, lastT = 0, segT = null, nowId = '';
+  // 본 영상인지(앞 광고가 아닌지): 지금 이어 보는 덩어리가 시작 초 언저리에서 시작했나. 광고는 0초에서 시작함. 시작 초가 3초 안쪽이면 가를 수 없어 본 영상으로 봄
+  function isMain() { return (!nowId || nowId === v) && (s < 3 || (segT !== null && segT >= s - 1.5)); }
   function started() { if (sawPlay) return; sawPlay = true; koOn(); if (clean) setTimeout(reveal, CLEAN_MS); }
   f.addEventListener('load', function () {
     var t = setInterval(function () { if (ready || ++n > 40) return clearInterval(t); post({event: 'listening', id: 1, channel: 'widget'}); }, 250);
@@ -70,10 +72,16 @@ iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
     if (ev.source !== f.contentWindow) return;
     var d; try { d = JSON.parse(ev.data); } catch (_) { return; }
     if (d.event === 'onReady' || d.event === 'initialDelivery') ready = true;
-    if (d.info && typeof d.info === 'object' && d.info.playerState !== undefined) {
-      state = d.info.playerState; if (state === 1) started();
-      if (!(state === 0 && cov)) up({wokaYt: 'state', state: state});
+    if (!d.info || typeof d.info !== 'object') return;
+    if (typeof d.info.currentTime === 'number') { var t = d.info.currentTime; if (segT === null || Math.abs(t - lastT) > 3) segT = t; lastT = t; }
+    if (d.info.videoData && d.info.videoData.video_id) nowId = d.info.videoData.video_id;
+    if (d.info.playerState !== undefined) {
+      state = d.info.playerState;
+      // 「끝」(0)은 본 영상이 구간 끝까지 간 때만 교안에 알림(앞 광고가 끝난 것을 영상 끝으로 잘못 알리지 않게)
+      var early = state === 0 && (cov || !sawPlay || (e && lastT < e - 3));
+      if (!early) up({wokaYt: 'state', state: state});
     }
+    if (state === 1 && isMain()) started();   // 광고가 먼저 나오면 본 영상이 시작될 때 자막을 켬
   });
 })();
 </script></body></html>

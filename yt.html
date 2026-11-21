@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="robots" content="noindex">
+<title>영상 재생</title>
+<style>
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+#cov { position: absolute; inset: 0; background: #000 center / contain no-repeat; }
+#bad { color: #fff; font: 20px sans-serif; padding: 40px; }
+</style></head><body><script>
+/* 교안용 유튜브 재생 쪽. 교안 정보는 한 글자도 없음. 유튜브 삽입 플레이어를 감싸기만 함.
+   왜 따로 있나: 유튜브는 삽입 재생 때 「어느 사이트에서 불렀는지」(Referer)를 요구함. 파일로 연 교안(file://)은 그 값이 비어 오류 153.
+                 이 쪽을 웹 주소(https://…)에 두고 교안이 iframe으로 부르면, 유튜브는 이 쪽의 주소를 받으므로 재생됨.
+   주소 꼬리: v=영상 번호(11자)  s=시작 초  e=끝 초  cc=ko(영어 자동 자막을 한국어 자동 번역으로)  src=en(원래 자막 말)  clean=1(자막 안내가 지나간 뒤 처음부터 보여 줌)
+   교안 → 이 쪽: {wokaYt:'toggle'} 재생·멈춤, {wokaYt:'pause'}, {wokaYt:'ko'} 자막 다시 켜기
+   이 쪽 → 교안: {wokaYt:'hello'} 열림, {wokaYt:'state', state:n} 유튜브 상태(1 재생, 2 멈춤, 0 끝) */
+(function () {
+  var q = new URLSearchParams(location.search), v = q.get('v') || '';
+  var s = Math.max(0, parseInt(q.get('s'), 10) || 0), e = Math.max(0, parseInt(q.get('e'), 10) || 0);
+  var LANG = /^[a-z]{2,3}(-[A-Za-z]{2,4})?$/;
+  var cc = LANG.test(q.get('cc') || '') ? q.get('cc') : '', from = LANG.test(q.get('src') || '') ? q.get('src') : 'en';
+  var clean = q.get('clean') === '1' && !!cc, CLEAN_MS = 3000;
+  function up(o) { try { parent.postMessage(o, '*'); } catch (_) {} }
+  if (!/^[\w-]{11}$/.test(v)) { document.body.innerHTML = '<div id="bad">영상 번호가 없습니다 (v=)</div>'; up({wokaYt: 'bad'}); return; }
+  up({wokaYt: 'hello'});
+
+  var f = document.createElement('iframe');
+  f.allow = 'autoplay; fullscreen; encrypted-media; picture-in-picture'; f.allowFullscreen = true;
+  f.referrerPolicy = 'strict-origin-when-cross-origin'; f.title = 'YouTube';
+  f.src = 'https://www.youtube-nocookie.com/embed/' + v + '?start=' + s + (e ? '&end=' + e : '') + '&autoplay=1' + (clean ? '&mute=1' : '') +
+    '&rel=0&playsinline=1&enablejsapi=1&hl=ko' + (cc ? '&cc_load_policy=1&cc_lang_pref=' + cc : '') + '&origin=' + encodeURIComponent(location.origin);
+  document.body.appendChild(f);
+
+  // clean=1: 썸네일 덮개 아래에서 소리 끄고 먼저 돌려 자막 안내를 흘려보낸 뒤, 시작 초로 되감고 소리를 켜고 덮개를 걷음
+  var cov = null;
+  if (clean) {
+    cov = document.createElement('div'); cov.id = 'cov'; document.body.appendChild(cov);
+    var im = new Image(), tried = false;
+    im.onload = function () { if (im.naturalWidth > 200 || tried) cov.style.backgroundImage = 'url(' + im.src + ')'; else im.onerror(); };
+    im.onerror = function () { if (tried) return; tried = true; im.src = 'https://i.ytimg.com/vi/' + v + '/hqdefault.jpg'; };
+    im.src = 'https://i.ytimg.com/vi/' + v + '/maxresdefault.jpg';
+  }
+  function reveal() { if (!cov) return; post({event: 'command', func: 'seekTo', args: [s, true]}); post({event: 'command', func: 'unMute', args: []}); post({event: 'command', func: 'setVolume', args: [100]});
+    var c = cov; cov = null; setTimeout(function () { c.remove(); }, 250); }
+
+  function post(o) { try { f.contentWindow.postMessage(JSON.stringify(o), '*'); } catch (_) {} }
+  function langName(code) { try { return new Intl.DisplayNames(['ko'], {type: 'language'}).of(code) || code; } catch (_) { return code === 'ko' ? '한국어' : code; } }
+  // 자막: 영어 자동 자막 → 한국어 자동 번역. languageName을 꼭 넣음(빼면 유튜브 안내에 「>> undefined」가 찍힘).
+  //       재생이 실제로 시작된 뒤 한 번만 보냄(먼저 보내면 버려지고, 되풀이하면 안내가 그때마다 다시 뜸)
+  function koOn() { if (!cc) return;
+    post({event: 'command', func: 'loadModule', args: ['captions']});
+    post({event: 'command', func: 'setOption', args: ['captions', 'track', {languageCode: from, kind: 'asr', translationLanguage: {languageCode: cc, languageName: langName(cc)}}]}); }
+
+  var ready = false, sawPlay = false, state = -1, n = 0;
+  function started() { if (sawPlay) return; sawPlay = true; koOn(); if (clean) setTimeout(reveal, CLEAN_MS); }
+  f.addEventListener('load', function () {
+    var t = setInterval(function () { if (ready || ++n > 40) return clearInterval(t); post({event: 'listening', id: 1, channel: 'widget'}); }, 250);
+    // 「재생 시작」 신호가 안 오는 브라우저(사파리 엔진 시험에서 그랬음)용 대비: 신호를 못 본 동안만 다시 보냄
+    [2500, 5000, 8000].forEach(function (ms) { setTimeout(function () { if (!sawPlay) koOn(); }, ms); });
+    if (clean) setTimeout(reveal, 7000);
+  });
+  window.addEventListener('message', function (ev) {
+    if (ev.source === parent && ev.data && ev.data.wokaYt) {
+      if (ev.data.wokaYt === 'toggle') post({event: 'command', func: state === 1 || state === 3 ? 'pauseVideo' : 'playVideo', args: []});
+      else if (ev.data.wokaYt === 'pause') post({event: 'command', func: 'pauseVideo', args: []});
+      else if (ev.data.wokaYt === 'ko') koOn();
+      return;
+    }
+    if (ev.source !== f.contentWindow) return;
+    var d; try { d = JSON.parse(ev.data); } catch (_) { return; }
+    if (d.event === 'onReady' || d.event === 'initialDelivery') ready = true;
+    if (d.info && typeof d.info === 'object' && d.info.playerState !== undefined) {
+      state = d.info.playerState; if (state === 1) started();
+      if (!(state === 0 && cov)) up({wokaYt: 'state', state: state});
+    }
+  });
+})();
+</script></body></html>
